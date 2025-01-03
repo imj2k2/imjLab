@@ -19,18 +19,19 @@ qty_put = 1   # Number of puts to buy when momentum is upwards
 
 # Function to fetch historical data (1-minute bars)
 def get_historical_data(symbol, timeframe='minute', limit=10):
-    barset = api.get_barset(symbol, timeframe, limit=limit)
-    data = barset[symbol]
-    df = pd.DataFrame({
-        'time': [bar.t for bar in data],
-        'open': [bar.o for bar in data],
-        'high': [bar.h for bar in data],
-        'low': [bar.l for bar in data],
-        'close': [bar.c for bar in data],
-        'volume': [bar.v for bar in data],
-    })
-    df.set_index('time', inplace=True)
-    return df
+    barset = api.get_bars(symbol, timeframe, limit=limit).df
+    return barset
+    # data = barset[symbol]
+    # df = pd.DataFrame({
+    #     'time': [bar.t for bar in data],
+    #     'open': [bar.o for bar in data],
+    #     'high': [bar.h for bar in data],
+    #     'low': [bar.l for bar in data],
+    #     'close': [bar.c for bar in data],
+    #     'volume': [bar.v for bar in data],
+    # })
+    # df.set_index('time', inplace=True)
+    # return df
 
 # Function to calculate momentum
 def calculate_momentum(df):
