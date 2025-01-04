@@ -4,7 +4,6 @@ import numpy as np
 import schedule
 import time
 from datetime import datetime, timedelta
-import os
 
 # Alpaca API credentials
 API_KEY = 'your_api_key'
@@ -31,14 +30,17 @@ INITIAL_CAPITAL = 100000
 
 # Fetch historical data
 def fetch_data(symbol, timeframe='day', start=None, end=None):
-    file_path = f"data/{symbol}_{timeframe}_{start}_{en}.csv"
+    file_path = f"data/{symbol}_{timeframe}_{start}_{end}.csv"
     if os.path.exists(file_path):
-        df = pd.read_csv(file_path, index_col=0, parse_dates=True)
+        data = pd.read_csv(file_path, index_col='timestamp', parse_dates=True)
     else:
         bars = api.get_bars(symbol, timeframe, start=start, end=end).df
         bars.to_csv(file_path)
         data = bars
     return data
+    
+if not os.path.exists("data"):
+    os.makedirs("data")
 
 def calculate_indicators(df):
     # ATR
@@ -104,6 +106,67 @@ def calculate_position_size(capital, atr, price):
     position_size = risk_amount / stop_loss
     return position_size
 
+def place_order(symbol, side, qty):
+    try:
+        api.submit_order(
+            symbol=symbol,
+            qty=qty,
+            side=side,
+            type='market',
+            time_in_force='gtc'
+        )
+        print(f"Order placed: {side} {qty} shares of {symbol}")
+    except Exception as e:
+        print(f"Error placing order for {symbol}: {e}")
+
+def monitor_positions():
+    positions = api.list_positions()
+    for position in positions:
+        symbol = position.symbol
+        qty = float(position.qty)
+        current_price = float(api.get_last_trade(symbol).price)
+        avg_entry_price = float(position.avg_entry_price)
+        atr = float(fetch_data(symbol).iloc[-1]['atr'])
+
+        trailing_stop_loss = avg_entry_price - atr
+        take_profit = avg_entry_price + (2 * atr)
+
+        if current_price <= trailing_stop_loss:
+            place_order(symbol, 'sell', qty)
+        elif current_price >= take_profit:
+            place_order(symbol, 'sell', qty)
+
+def run_live_trading():
+    print("Starting live trading...")
+    capital = INITIAL_CAPITAL
+
+    while True:
+        for symbol in SYMBOLS:
+            try:
+                data = fetch_data(symbol, timeframe='minute', start=(datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d'))
+                data = calculate_indicators(data)
+
+                buy_signal, sell_signal = check_signals(data)
+
+                if buy_signal:
+                    atr = data['atr'].iloc[-1]
+                    position_size = calculate_position_size(capital, atr, data['close'].iloc[-1])
+                    place_order(symbol, 'buy', position_size)
+
+                if sell_signal:
+                    positions = api.list_positions()
+                    for position in positions:
+                        if position.symbol == symbol:
+                            qty = float(position.qty)
+                            place_order(symbol, 'sell', qty)
+
+                monitor_positions()
+
+            except Exception as e:
+                print(f"Error processing {symbol}: {e}")
+
+        time.sleep(60)
+
 def backtest(data):
     capital = INITIAL_CAPITAL
     position = 0
@@ -165,8 +228,7 @@ if __name__ == "__main__":
         if choice == "1":
             run_backtest()
         elif choice == "2":
-            print("Starting live trading (not implemented in this script)...")
-            # Placeholder for live trading functionality
+            run_live_trading()
         elif choice == "3":
             print("Exiting program.")
             break
