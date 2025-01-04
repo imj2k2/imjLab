@@ -5,6 +5,7 @@ import numpy as np
 from ta.trend import SMAIndicator
 import matplotlib.pyplot as plt
 import backtrader as bt
+import os
 
 # Alpaca API Keys
 ALPACA_API_KEY = "your_api_key"
@@ -13,6 +14,30 @@ ALPACA_BASE_URL = "https://paper-api.alpaca.markets"
 
 # Initialize Alpaca API
 api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version='v2')
+
+# Function to Save and Load Data
+def get_historic_data(ticker, file_path, start_date="2000-01-01"):
+    """Fetch and save historic data to CSV, updating as needed."""
+    if os.path.exists(file_path):
+        data = pd.read_csv(file_path, index_col="Date", parse_dates=True)
+        last_date = data.index[-1]
+        today = pd.Timestamp.today()
+        if last_date >= today - pd.Timedelta(days=1):
+            print(f"Data for {ticker} is up-to-date.")
+            return data
+        else:
+            print(f"Updating data for {ticker} from {last_date + pd.Timedelta(days=1)}.")
+            new_data = yf.download(ticker, start=last_date + pd.Timedelta(days=1))
+            if not new_data.empty:
+                data = pd.concat([data, new_data])
+                data.to_csv(file_path)
+            return data
+    else:
+        print(f"Downloading new data for {ticker} starting from {start_date}.")
+        data = yf.download(ticker, start=start_date)
+        if not data.empty:
+            data.to_csv(file_path)
+        return data
 
 # Mark Minervini's Stock Selection Criteria
 def minervini_stock_screener():
@@ -23,20 +48,25 @@ def minervini_stock_screener():
 
     for ticker in sp500:
         try:
-            data = yf.download(ticker, period="6mo", interval="1d")
+            file_path = f"data/{ticker}.csv"
+            data = get_historic_data(ticker, file_path, start_date="2022-01-01")
+
             if len(data) < 125:  # Ensure enough data points
                 continue
 
-            data['SMA50'] = SMAIndicator(data['Close'], 50).sma_indicator()
-            data['SMA150'] = SMAIndicator(data['Close'], 150).sma_indicator()
-            data['SMA200'] = SMAIndicator(data['Close'], 200).sma_indicator()
+            closes = data['Close'].copy()
+            closes = pd.Series(closes.values.flatten(), index=closes.index)  # Ensure 1D Series
+
+            data['SMA50'] = SMAIndicator(closes, 50).sma_indicator()
+            data['SMA150'] = SMAIndicator(closes, 150).sma_indicator()
+            data['SMA200'] = SMAIndicator(closes, 200).sma_indicator()
 
             # Minervini's Criteria
-            recent = data.iloc[-1]
             if (
-                recent['Close'] > recent['SMA50'] > recent['SMA150'] > recent['SMA200'] and
-                data['Close'][-1] > data['Close'][-1] * 1.25 and
-                recent['Close'] > data['Close'].max() * 0.75
+                data['Close'].iloc[-1] > data['SMA50'].iloc[-1] and
+                data['SMA50'].iloc[-1] > data['SMA150'].iloc[-1] and
+                data['SMA150'].iloc[-1] > data['SMA200'].iloc[-1] and
+                data['Close'].iloc[-1] > data['Close'].iloc[-125:].max() * 0.75
             ):
                 selected_stocks.append(ticker)
         except Exception as e:
@@ -49,13 +79,19 @@ def execute_trend_following(selected_stocks):
     """Execute a trend following strategy."""
     for stock in selected_stocks:
         try:
-            data = api.get_barset(stock, 'day', limit=200)[stock]
-            closes = [bar.c for bar in data]
-            
-            sma50 = SMAIndicator(pd.Series(closes), 50).sma_indicator()
-            sma200 = SMAIndicator(pd.Series(closes), 200).sma_indicator()
+            file_path = f"data/{stock}.csv"
+            data = get_historic_data(stock, file_path, start_date="2022-01-01")
 
-            if closes[-1] > sma50[-1] > sma200[-1]:
+            closes = data['Close'].copy()
+            closes = pd.Series(closes.values.flatten(), index=closes.index)  # Ensure 1D Series
+
+            data['SMA50'] = SMAIndicator(closes, 50).sma_indicator()
+            data['SMA200'] = SMAIndicator(closes, 200).sma_indicator()
+
+            if (
+                data['Close'].iloc[-1] > data['SMA50'].iloc[-1] and
+                data['SMA50'].iloc[-1] > data['SMA200'].iloc[-1]
+            ):
                 # Place a market order (Paper trading)
                 api.submit_order(
                     symbol=stock,
@@ -89,8 +125,10 @@ def run_backtest(stock):
     cerebro = bt.Cerebro()
     cerebro.addstrategy(TrendFollowingStrategy)
 
-    data = bt.feeds.PandasData(dataname=yf.download(stock, '2022-01-01', '2023-01-01'))
-    cerebro.adddata(data)
+    file_path = f"data/{stock}.csv"
+    data = get_historic_data(stock, file_path, start_date="2022-01-01")
+    bt_data = bt.feeds.PandasData(dataname=data)
+    cerebro.adddata(bt_data)
 
     cerebro.broker.set_cash(10000)
     cerebro.run()
@@ -98,6 +136,9 @@ def run_backtest(stock):
 
 # Main Execution
 if __name__ == "__main__":
+    if not os.path.exists("data"):
+        os.makedirs("data")
+
     stocks = minervini_stock_screener()
     print(f"Selected Stocks: {stocks}")
     execute_trend_following(stocks)
