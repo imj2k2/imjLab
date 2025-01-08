@@ -88,6 +88,12 @@ class MinerviniBot(Strategy):
             self.log(f"Error retrieving market sentiment data: {e}")
             return "Neutral"
 
+    def calculate_position_size(self, stock_data, capital_per_trade):
+        """Calculate position size based on stock volatility (ATR)."""
+        atr = talib.ATR(stock_data["High"], stock_data["Low"], stock_data["Close"], timeperiod=14).iloc[-1]
+        position_size = capital_per_trade / atr
+        return position_size
+
     def on_trading_iteration(self):
         """Place trades based on entry/exit criteria and market sentiment."""
         if not self.screener_ran:
@@ -98,8 +104,14 @@ class MinerviniBot(Strategy):
             self.log("Market sentiment is bearish. No trades will be executed.")
             return
 
-        capital_per_trade = self.parameters["capital"] * self.parameters["risk_per_trade"]
+        available_capital = self.parameters["capital"]
+        capital_per_trade = available_capital * self.parameters["risk_per_trade"]
+        total_allocated_capital = 0
+
         for stock in self.top_stocks:
+            if total_allocated_capital >= available_capital:
+                break
+
             symbol = stock["symbol"]
             data = yf.download(symbol, period="3mo", interval="1d")
 
@@ -108,8 +120,14 @@ class MinerviniBot(Strategy):
 
             resistance = data["Close"].rolling(window=50).max().iloc[-2]
             if data["Close"].iloc[-1] > resistance:
+                position_size = self.calculate_position_size(data, capital_per_trade)
+                total_cost = position_size * data["Close"].iloc[-1]
+
+                if total_cost + total_allocated_capital > available_capital:
+                    break
+
                 trailing_stop_loss = data["Close"].iloc[-1] * (1 - self.parameters["trailing_stop_loss_pct"])
-                quantity = int(capital_per_trade // data["Close"].iloc[-1])
+                quantity = int(position_size)
 
                 self.submit_order(
                     symbol=symbol,
@@ -117,6 +135,8 @@ class MinerviniBot(Strategy):
                     side="buy",
                     trailing_stop_loss=trailing_stop_loss,
                 )
+
+                total_allocated_capital += total_cost
 
                 self.notify(f"Bought {quantity} shares of {symbol} at {data['Close'].iloc[-1]} with trailing stop loss.")
 

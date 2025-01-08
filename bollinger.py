@@ -4,6 +4,7 @@ import numpy as np
 import schedule
 import time
 from datetime import datetime, timedelta
+import os
 
 # Alpaca API credentials
 API_KEY = 'your_api_key'
@@ -38,7 +39,7 @@ def fetch_data(symbol, timeframe='day', start=None, end=None):
         bars.to_csv(file_path)
         data = bars
     return data
-    
+
 if not os.path.exists("data"):
     os.makedirs("data")
 
