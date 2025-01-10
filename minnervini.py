@@ -56,7 +56,6 @@ class MinerviniBot(Strategy):
         return None
 
     def screen_stocks(self):
-        """Screen stocks based on Minervini's criteria."""
         if os.path.exists(self.data_file):
             if os.path.getsize(self.data_file) == 0:
                 os.remove(self.data_file)
@@ -77,25 +76,15 @@ class MinerviniBot(Strategy):
         screened_stocks = []
         for symbol in universe:
             try:
-                #data = yf.download(symbol, period="1y", interval="1d")
                 data = self.fetch_data_with_retries(symbol)
-                # Check for valid data
-                if data.empty or "Close" not in data.columns or data["Close"].isnull().all():
-                    self.log(f"Data for {symbol} is invalid or missing. Skipping.")
-                    continue
+                data = data.dropna(subset=["Close", "Volume"])
 
-                data = data.dropna(subset=["Close"])  # Ensure no NaN values
-                close_prices = data["Close"].values  
+                close_prices = data["Close"].values
                 data["50SMA"] = talib.SMA(close_prices, timeperiod=50)
                 data["150SMA"] = talib.SMA(close_prices, timeperiod=150)
                 data["RS"] = data["Close"] / data["Close"].rolling(window=252).mean()
 
-                if (
-                    data["RS"].iloc[-1] > 1.8
-                    and data["Close"].iloc[-1] > data["50SMA"].iloc[-1]
-                    and data["50SMA"].iloc[-1] > data["150SMA"].iloc[-1]
-                    and data["Volume"].iloc[-1] > self.parameters["volume_threshold"]
-                ):
+                if self.is_valid_stock(data, self.parameters["volume_threshold"]):
                     screened_stocks.append(
                         {
                             "symbol": symbol,
@@ -105,11 +94,27 @@ class MinerviniBot(Strategy):
             except Exception as e:
                 self.log(f"Error screening {symbol}: {e}")
 
-        self.top_stocks = sorted(screened_stocks, key=lambda x: x["momentum"], reverse=True)[
-            : self.parameters["top_n"]
-        ]
+        self.top_stocks = sorted(screened_stocks, key=lambda x: x["momentum"], reverse=True)[:self.parameters["top_n"]]
         pd.DataFrame(self.top_stocks).to_csv(self.data_file, index=False)
         self.screener_ran = True
+
+    def is_valid_stock(self, data, volume_threshold):
+        try:
+            rs = data["RS"].iloc[-1]
+            close = data["Close"].iloc[-1]
+            sma_50 = data["50SMA"].iloc[-1]
+            sma_150 = data["150SMA"].iloc[-1]
+            volume = data["Volume"].iloc[-1]
+
+            return (
+                rs > 1.8
+                and close > sma_50
+                and sma_50 > sma_150
+                and volume > volume_threshold
+            )
+        except Exception as e:
+            self.log(f"Error validating stock data: {e}")
+            return False
 
 
     def get_market_sentiment(self):
