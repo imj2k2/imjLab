@@ -16,8 +16,8 @@ config.read(".env_test")
 
 ALPACA_CONFIG = {
     # Put your own Alpaca key here:
-    "ALPACA_API_KEY": config["ALPACA"]["ALPACA_API_KEY"],
-    "ALPACA_SECRET_KEY": config["ALPACA"]["ALPACA_SECRET_KEY"],
+    "API_KEY": config["ALPACA"]["ALPACA_API_KEY"],
+    "API_SECRET": config["ALPACA"]["ALPACA_SECRET_KEY"],
     "ALPACA_IS_PAPER": "True",
 }
 
@@ -133,21 +133,42 @@ class MinerviniBot(Strategy):
             symbol = stock["symbol"]
             momentum_weight = stock["momentum"] / total_momentum
             capital_allocation = available_capital * momentum_weight
+            # Check if a position or pending order already exists
+            existing_position = self.get_position(symbol)
+            open_orders = self.get_open_orders(symbol)
+
+            if existing_position or open_orders:
+                self.log(f"Skipping {symbol} as it already has an existing position or open order.")
+                continue
 
             data = yf.download(symbol, period="3mo", interval="1d")
             if len(data) < 50:
                 continue
 
             resistance = data["Close"].rolling(window=50).max().iloc[-2]
-            if data["Close"].iloc[-1] > resistance:
-                position_size = capital_allocation / data["Close"].iloc[-1]
-                trailing_stop_loss = data["Close"].iloc[-1] * (1 - self.parameters["trailing_stop_loss_pct"])
-
+            if resistance.isna().any():
+                self.log(f"Resistance value is NaN for {symbol}. Skipping.")
+                continue
+            # Extract scalar values for comparison
+            close_value = data["Close"].iloc[-1].iloc[0]
+            resistance_value = resistance.iloc[0]
+            self.log(f"Close value: {close_value}, Resistance value: {resistance_value}")
+            # self.log(f"Close value: {data['Close'].iloc[-1]}, Resistance value: {resistance}")
+            # self.log(f"Close type: {type(data['Close'].iloc[-1])}, Resistance type: {type(resistance)}")
+            if close_value > resistance_value:
+                position_size = capital_allocation / close_value
+                max_pct = 0.25
+                trailing_stop_loss_pct = min(self.parameters["trailing_stop_loss_pct"], max_pct)
+                trailing_stop_loss = close_value * (1 - trailing_stop_loss_pct)
+                self.log(f"Buying {position_size} shares of {symbol} at {close_value} with trailing stop loss at {trailing_stop_loss}")
                 order = self.create_order(
+                    symbol,
                     asset=symbol,
                     quantity=int(position_size),
                     side="buy",
-                    trail_price=trailing_stop_loss,
+                    type="market",
+                    time_in_force="day",
+                    trail_percent=10
                 )
                 self.submit_order(order)
 
