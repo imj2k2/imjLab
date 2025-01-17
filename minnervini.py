@@ -135,7 +135,7 @@ class MinerviniBot(Strategy):
             capital_allocation = available_capital * momentum_weight
             # Check if a position or pending order already exists
             existing_position = self.get_position(symbol)
-            open_orders = self.get_open_orders(symbol)
+            open_orders = [order for order in self.get_orders() if order.asset == symbol]
 
             if existing_position or open_orders:
                 self.log(f"Skipping {symbol} as it already has an existing position or open order.")
@@ -162,7 +162,6 @@ class MinerviniBot(Strategy):
                 trailing_stop_loss = close_value * (1 - trailing_stop_loss_pct)
                 self.log(f"Buying {position_size} shares of {symbol} at {close_value} with trailing stop loss at {trailing_stop_loss}")
                 order = self.create_order(
-                    symbol,
                     asset=symbol,
                     quantity=int(position_size),
                     side="buy",
