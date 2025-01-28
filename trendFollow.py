@@ -6,10 +6,13 @@ from ta.trend import SMAIndicator
 import matplotlib.pyplot as plt
 import backtrader as bt
 import os
+import configparser
 
+config = configparser.ConfigParser()
+config.read(".env_test")
 # Alpaca API Keys
-ALPACA_API_KEY = "your_api_key"
-ALPACA_SECRET_KEY = "your_secret_key"
+ALPACA_API_KEY = config["ALPACA"]["ALPACA_API_KEY"]
+ALPACA_SECRET_KEY = config["ALPACA"]["ALPACA_SECRET_KEY"]
 ALPACA_BASE_URL = "https://paper-api.alpaca.markets"
 
 # Initialize Alpaca API
