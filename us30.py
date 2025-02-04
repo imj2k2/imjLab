@@ -14,7 +14,6 @@ config = configparser.ConfigParser()
 config.read(".env_test")
 
 ALPACA_CONFIG = {
-    # Put your own Alpaca key here:
     "API_KEY": config["ALPACA"]["ALPACA_API_KEY"],
     "API_SECRET": config["ALPACA"]["ALPACA_SECRET_KEY"],
     "ALPACA_IS_PAPER": "True",
@@ -31,96 +30,107 @@ class US30HedgingStrategy(Strategy):
         self.max_daily_loss = 0.05  # 5% daily loss limit
         self.max_total_drawdown = 0.3  # 30% total drawdown limit
         self.starting_cash = self.get_cash()  # Initial cash
+        self.hedge_assets = ["GLD", "TLT", "SPXU"]  # Diversified hedging assets
+    
+    def log(self, message):
+        """Log messages to the console."""
+        print(f"[{self.get_datetime()}] {message}")
 
+    def order(self, symbol, amount, side):
+        """Place an order with the broker."""
+        if amount == 0:
+            return
+        order = self.create_order(
+                    asset=symbol,
+                    quantity=amount,
+                    side="side",
+                    type="market",
+                    time_in_force="day",
+                    trail_percent=10
+                )
+        self.submit_order(order)
+    
     def on_trading_iteration(self):
         data = self.get_historical_prices(self.symbol, self.data_window, "day").df
-        print(f"Data: {data}")
-        close_prices = data["close"].values
         
-        if len(close_prices) < self.data_window:
+        if len(data) < self.data_window:
             return  # Ensure enough data
         
         # Compute Indicators
-        atr = talib.ATR(data["high"], data["low"], data["close"], timeperiod=14)
-        qqe = talib.RSI(close_prices, timeperiod=14)
-        tema = talib.TEMA(close_prices, timeperiod=9)
-        cmf = (2 * data["close"] - data["high"] - data["low"]) / (data["high"] - data["low"])
+        atr = talib.ATR(data["high"], data["low"], data["close"], timeperiod=14).dropna()
+        rsi = talib.RSI(data["close"], timeperiod=14).dropna()
+        tema = talib.TEMA(data["close"], timeperiod=9).dropna()
         
-        # Dynamic Position Sizing
-        capital = self.get_cash()
-        risk_amount = capital * 0.02  # Risk 2% per trade
-        position_size = risk_amount / (2 * atr.iloc[-1])
-        self.position_size = max(100, min(position_size, 10000))
+        if atr.empty or rsi.empty or tema.empty:
+            return  # Ensure indicators are available
+        
+        current_price = data["close"].iloc[-1]
+        position = self.get_position(self.symbol)
         
         # Generate Buy/Sell Signal
-        if qqe[-1] > 50 and tema[-1] > tema[-2] and cmf[-1] > 0:
+        if rsi.iloc[-1] > 50 and tema.iloc[-1] > tema.iloc[-2]:
             signal = "BUY"
-        elif qqe[-1] < 50 and tema[-1] < tema[-2] and cmf[-1] < 0:
+        elif rsi.iloc[-1] < 50 and tema.iloc[-1] < tema.iloc[-2]:
             signal = "SELL"
         else:
             signal = "HOLD"
         
-        current_price = close_prices[-1]
-        position = self.get_position(self.symbol)
+        # Risk Management & Position Sizing
+        capital = self.get_portfolio_value()
+        risk_amount = capital * 0.02  # Risk 2% per trade
+        position_size = max(100, min(risk_amount / (2 * atr.iloc[-1]), 10000))
         
-        # Check Market Conditions
-        atr_pct = atr[-1] / close_prices[-1]
-        if atr_pct > 0.03:
-            return  # Skip trades during high volatility
-        
-        # Trading Hours Filter
-        now = self.get_datetime()
-        current_time = now.time()
-        if current_time < datetime.time(9, 30) or current_time > datetime.time(16, 0):
+        # Avoid trading during high volatility
+        if atr.iloc[-1] / current_price > 0.03:
+            self.log("High volatility detected. Skipping trade.")
             return
         
         # Circuit Breakers
         if self.get_cash() < self.starting_cash * (1 - self.max_total_drawdown):
+            self.log("Max drawdown reached. Stopping trading.")
             self.stop_trading()
+            return
         if self.get_portfolio_value() - self.starting_cash < -self.starting_cash * self.max_daily_loss:
+            self.log("Max daily loss reached. Stopping trading.")
             self.stop_trading()
+            return
         
         # Trading Logic
-        if signal == "BUY" and not position:
-            self.buy(self.symbol, self.position_size)
+        if signal == "BUY" and (position is None or position.amount <= 0):
+            self.order(self.symbol, position_size, side="buy")
             self.last_signal = "BUY"
-        elif signal == "SELL" and position:
-            if position.amount > 0:
-                self.sell(self.symbol, position.amount)
-            self.short(self.symbol, self.position_size)
+            self.log(f"Buying {position_size} shares of {self.symbol}")
+        elif signal == "SELL" and (position is not None and position.amount > 0):
+            self.order(self.symbol, -position.amount, side="sell")  # Corrected
+            self.order(self.symbol, -position_size, side="sell")
             self.last_signal = "SELL"
+            self.log(f"Selling {position.amount} shares and shorting {position_size} shares of {self.symbol}")
         
-        # Tiered Hedging
-        if position and abs(position.unrealized_pl / position.cost_basis) > self.hedge_threshold:
-            hedge_size = self.position_size * 0.25
-            if abs(position.unrealized_pl / position.cost_basis) > self.hedge_threshold * 1.5:
-                hedge_size = self.position_size * 0.5
-            if abs(position.unrealized_pl / position.cost_basis) > self.hedge_threshold * 2:
-                hedge_size = self.position_size
+        # Hedging Strategy
+        if position and abs(position.unrealized_pl / max(position.cost_basis, 1e-6)) > self.hedge_threshold:
+            hedge_size = position_size * 0.25
+            if abs(position.unrealized_pl / max(position.cost_basis, 1e-6)) > self.hedge_threshold * 1.5:
+                hedge_size = position_size * 0.5
+            if abs(position.unrealized_pl / max(position.cost_basis, 1e-6)) > self.hedge_threshold * 2:
+                hedge_size = position_size
             
-            if position.amount > 0:
-                self.short(self.symbol, hedge_size)
-            else:
-                self.buy(self.symbol, hedge_size)
+            hedge_asset = np.random.choice(self.hedge_assets)  # Randomize hedge asset
+            self.order(hedge_asset, hedge_size / 2, side="buy")
+            #self.buy(hedge_asset, hedge_size / 2)
+            self.log(f"Hedging with {hedge_size / 2} shares of {hedge_asset}")
         
-        # Alternative Hedge Assets
-        if abs(position.unrealized_pl / position.cost_basis) > self.hedge_threshold * 1.5:
-            self.buy("GLD", hedge_size / 2)
-            self.buy("TLT", hedge_size / 2)
-        
-        # Stop Loss
-        if position and abs(position.unrealized_pl / position.cost_basis) > self.stop_loss_pct:
-            self.sell(self.symbol, position.amount)
+        # Stop Loss Handling
+        if position and abs(position.unrealized_pl / max(position.cost_basis, 1e-6)) > self.stop_loss_pct:
+            self.order(self.symbol, -position.amount, side="sell")
+            self.log(f"Stop loss triggered. Selling {position.amount} shares of {self.symbol}")
 
+# Backtest Configuration
 datetime_start = datetime.datetime(2023, 1, 1)
 datetime_end = datetime.datetime(2023, 12, 31)
-# Run Backtest
-#data = YahooDataBacktesting(datetime_start, datetime_end)
-#backtest = Trader(US30HedgingStrategy, data, start_date="2023-01-01", end_date="2024-01-01")
-backtest = US30HedgingStrategy.run_backtest(YahooDataBacktesting,datetime_start,datetime_end)
 
+backtest = US30HedgingStrategy.run_backtest(YahooDataBacktesting, datetime_start, datetime_end)
 
-# Deploy Live
+# Live Deployment
 # broker = Alpaca(ALPACA_CONFIG)
 # live_trader = Trader(US30HedgingStrategy, broker)
-#live_trader.run()
+# live_trader.run()
